@@ -1,0 +1,29 @@
+# Python cache
+__pycache__/
+*.pyc
+
+# Virtual environment
+.venv/
+venv/
+
+# Environment variables
+.env
+
+# ML models
+models/
+*.h5
+*.pt
+*.pkl
+*.joblib
+
+# Data folders
+data/
+dataset/
+datasets/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS files
+.DS_Store
+Thumbs.db
