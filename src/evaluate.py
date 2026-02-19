@@ -1,189 +1,167 @@
-"""
-Evaluation utilities: classification report and feature importance plot.
-"""
+try:
+    import shap
+    SHAP_AVAILABLE = True
+except ImportError:
+    SHAP_AVAILABLE = False
+    print("Warning: SHAP not available. Install with: pip install shap")
 
-import os
-from datetime import datetime
-import joblib
-import pandas as pd
-import numpy as np
 import matplotlib.pyplot as plt
-from sklearn.metrics import classification_report
-from sklearn.preprocessing import LabelEncoder
+from sklearn.metrics import classification_report, confusion_matrix, ConfusionMatrixDisplay, f1_score
+import os
+import numpy as np
+import joblib
+from datetime import datetime
 
-from config import MODEL_PATH, ENCODER_PATH, ARTIFACTS_DIR, PLOTS_DIR
-from preprocessing import get_feature_columns
-
-# Feature categories for visualization (chemical tracers vs PM)
-CHEMICAL_TRACERS = {"co", "no", "no2", "o3", "so2", "nh3", "nitrogen_ratio"}
-PM_FEATURES = {"PM25", "PM10", "pm_ratio"}
+from config import MODEL_PATH, ENCODER_PATH, SCALER_PATH, PLOTS_DIR
 
 
 def load_model_and_encoder():
     """
-    Load the saved model and label encoder from artifacts/.
+    Load the trained model and label encoder from artifacts.
 
     Returns:
         Tuple of (model, encoder).
     """
-    if not os.path.isfile(MODEL_PATH) or not os.path.isfile(ENCODER_PATH):
-        raise FileNotFoundError(
-            f"Artifacts not found in {ARTIFACTS_DIR}. Run train.py first."
-        )
     model = joblib.load(MODEL_PATH)
     encoder = joblib.load(ENCODER_PATH)
     return model, encoder
 
 
-def classification_report_from_arrays(
-    y_true: np.ndarray,
-    y_pred: np.ndarray,
-    encoder: LabelEncoder = None,
-) -> str:
+def run_classification_report(X_test, y_test, model=None, encoder=None):
     """
-    Generate sklearn classification report; optionally decode labels.
+    Generate and return classification report.
 
     Args:
-        y_true: True labels (encoded or string).
-        y_pred: Predicted labels (encoded or string).
-        encoder: If provided, inverse_transform is used for display.
-
-    Returns:
-        String classification report.
-    """
-    if encoder is not None:
-        try:
-            y_true = encoder.inverse_transform(y_true.astype(int))
-            y_pred = encoder.inverse_transform(y_pred.astype(int))
-        except (ValueError, TypeError):
-            pass
-    return classification_report(y_true, y_pred)
-
-
-def run_classification_report(
-    X: pd.DataFrame,
-    y: pd.Series,
-    model=None,
-    encoder=None,
-) -> str:
-    """
-    Compute and return classification report for given features and labels.
-
-    Args:
-        X: Feature matrix (same columns as get_feature_columns()).
-        y: True labels (string or encoded).
-        model: Fitted classifier; if None, loaded from artifacts.
-        encoder: Fitted LabelEncoder; if None, loaded from artifacts.
+        X_test: Test features.
+        y_test: True labels.
+        model: Trained model (if None, load from artifacts).
+        encoder: Label encoder (if None, load from artifacts).
 
     Returns:
         Classification report string.
     """
     if model is None or encoder is None:
         model, encoder = load_model_and_encoder()
-    y_encoded = encoder.transform(y.astype(str))
-    y_pred = model.predict(X)
-    return classification_report_from_arrays(y_encoded, y_pred, encoder=encoder)
+    y_pred_encoded = model.predict(X_test)
+    y_pred = encoder.inverse_transform(y_pred_encoded)
+    report = classification_report(y_test, y_pred, target_names=encoder.classes_)
+    return report
 
 
-def _get_feature_category(name: str) -> str:
-    """Return category for coloring: chemical, PM, or other."""
-    if name in CHEMICAL_TRACERS:
-        return "chemical"
-    if name in PM_FEATURES:
-        return "pm"
-    return "other"
-
-
-def plot_feature_importance(
-    model,
-    feature_names: list = None,
-    save_path: str = None,
-    top_n: int = None,
-) -> None:
+def evaluate_on_data(X_test, y_test, save_with_timestamp=False):
     """
-    Plot and optionally save feature importance from tree-based model.
-
-    Color-codes features by category: chemical tracers (SO2, NO2, NH3, etc.)
-    vs PM features (PM25, PM10, pm_ratio) to show how much chemical tracers
-    contribute to source identification compared to PM levels.
+    Evaluate model on test data and save plots.
 
     Args:
-        model: Fitted XGBClassifier (or model with feature_importances_).
-        feature_names: List of feature names; default from get_feature_columns().
-        save_path: If set, save figure to this path (e.g. artifacts/plots/feature_importance.png).
-        top_n: If set, show only top_n features by importance.
-    """
-    import matplotlib.patches as mpatches
-
-    if feature_names is None:
-        feature_names = get_feature_columns()
-    imp = model.feature_importances_
-    if len(feature_names) != len(imp):
-        feature_names = [f"f{i}" for i in range(len(imp))]
-    idx = np.argsort(imp)[::-1]
-    if top_n is not None:
-        idx = idx[:top_n]
-    names = [feature_names[i] for i in idx]
-    values = imp[idx]
-    colors = []
-    for n in names:
-        cat = _get_feature_category(n)
-        if cat == "chemical":
-            colors.append("#2ecc71")
-        elif cat == "pm":
-            colors.append("#e74c3c")
-        else:
-            colors.append("#3498db")
-    fig, ax = plt.subplots(figsize=(9, max(5, len(names) * 0.4)))
-    ax.barh(range(len(names)), values, align="center", color=colors)
-    ax.set_yticks(range(len(names)))
-    ax.set_yticklabels(names, fontsize=10)
-    ax.invert_yaxis()
-    ax.set_xlabel("Feature importance", fontsize=11)
-    ax.set_title(
-        "Feature importance: chemical tracers vs PM (chemical=green, PM=red, other=blue)",
-        fontsize=11,
-    )
-    legend = [
-        mpatches.Patch(color="#2ecc71", label="Chemical tracers (SO2, NO2, NH3, etc.)"),
-        mpatches.Patch(color="#e74c3c", label="PM features (PM2.5, PM10, ratio)"),
-        mpatches.Patch(color="#3498db", label="Other (time, wind)"),
-    ]
-    ax.legend(handles=legend, loc="lower right", fontsize=9)
-    plt.tight_layout()
-    if save_path:
-        os.makedirs(os.path.dirname(save_path) or ".", exist_ok=True)
-        plt.savefig(save_path, dpi=150, bbox_inches="tight")
-        print(f"  Saved plot: {save_path}")
-    plt.close()
-
-
-def evaluate_on_data(
-    X: pd.DataFrame,
-    y: pd.Series,
-    save_importance_path: str = None,
-    save_with_timestamp: bool = False,
-) -> str:
-    """
-    Run full evaluation: classification report and feature importance plot.
-
-    Args:
-        X: Feature matrix.
-        y: True labels (string).
-        save_importance_path: Path to save feature importance plot;
-            default artifacts/plots/feature_importance.png.
-        save_with_timestamp: If True, append timestamp to filename to avoid overwrite.
-
-    Returns:
-        Classification report string.
+        X_test: Test features.
+        y_test: True labels.
+        save_with_timestamp: If True, save plots with timestamp.
     """
     model, encoder = load_model_and_encoder()
-    report = run_classification_report(X, y, model=model, encoder=encoder)
-    if save_importance_path is None:
-        base = "feature_importance"
-        if save_with_timestamp:
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            base = f"{base}_{ts}"
-        save_importance_path = os.path.join(PLOTS_DIR, f"{base}.png")
-    plot_feature_importance(model, save_path=save_importance_path)
-    return report
+    y_pred_encoded = model.predict(X_test)
+    y_pred = encoder.inverse_transform(y_pred_encoded)
+
+    # Classification report
+    report = classification_report(y_test, y_pred, target_names=encoder.classes_)
+    print("\n--- Classification Report ---")
+    print(report)
+
+    # Macro F1
+    macro_f1 = f1_score(y_test, y_pred, average='macro')
+    print(f"Macro F1 Score: {macro_f1:.4f}")
+
+    # Confusion matrix
+    cm = confusion_matrix(y_test, y_pred)
+    fig, ax = plt.subplots(figsize=(14, 10))
+    disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=encoder.classes_)
+    disp.plot(cmap='Blues', xticks_rotation=45, ax=ax)
+    plt.title('Confusion Matrix: Pollution Source Categories')
+    plt.tight_layout()
+
+    if save_with_timestamp:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        cm_path = os.path.join(PLOTS_DIR, f'confusion_matrix_{timestamp}.png')
+    else:
+        cm_path = os.path.join(PLOTS_DIR, 'confusion_matrix.png')
+    plt.savefig(cm_path)
+    plt.close()
+    print(f"Confusion matrix saved to {cm_path}")
+
+    # SHAP explainability
+    if SHAP_AVAILABLE:
+        try:
+            explainer = shap.TreeExplainer(model)
+            shap_values = explainer.shap_values(X_test)
+            plt.figure(figsize=(12, 8))
+            shap.summary_plot(shap_values, X_test, feature_names=X_test.columns, show=False)
+            if save_with_timestamp:
+                shap_path = os.path.join(PLOTS_DIR, f'shap_summary_{timestamp}.png')
+            else:
+                shap_path = os.path.join(PLOTS_DIR, 'shap_summary.png')
+            plt.savefig(shap_path, bbox_inches='tight')
+            plt.close()
+            print(f"SHAP summary plot saved to {shap_path}")
+        except Exception as e:
+            print(f"SHAP analysis failed: {e}")
+    else:
+        print("Skipping SHAP analysis (shap not installed)")
+
+
+def run_evaluation(model, X_test, y_test, encoder, plots_dir):
+    """
+    Comprehensive evaluation suite including SHAP and metrics.
+
+    Args:
+        model: Trained model.
+        X_test: Test features.
+        y_test: True labels.
+        encoder: Label encoder.
+        plots_dir: Directory to save plots.
+
+    Returns:
+        Tuple of (classification_report, macro_f1).
+    """
+    os.makedirs(plots_dir, exist_ok=True)
+
+    # Predictions
+    y_pred_encoded = model.predict(X_test)
+    y_pred = encoder.inverse_transform(y_pred_encoded)
+
+    # Classification report
+    report = classification_report(y_test, y_pred, target_names=encoder.classes_)
+    print("\n--- Classification Report ---")
+    print(report)
+
+    # Macro F1
+    macro_f1 = f1_score(y_test, y_pred, average='macro')
+    print(f"Macro F1 Score: {macro_f1:.4f}")
+
+    # Confusion matrix
+    cm = confusion_matrix(y_test, y_pred)
+    fig, ax = plt.subplots(figsize=(14, 10))
+    disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=encoder.classes_)
+    disp.plot(cmap='Blues', xticks_rotation=45, ax=ax)
+    plt.title('Confusion Matrix: Pollution Source Categories')
+    plt.tight_layout()
+    cm_plot_path = os.path.join(plots_dir, 'confusion_matrix.png')
+    plt.savefig(cm_plot_path)
+    plt.close()
+    print(f"Confusion matrix saved to {cm_plot_path}")
+
+    # SHAP
+    if SHAP_AVAILABLE:
+        try:
+            explainer = shap.TreeExplainer(model)
+            shap_values = explainer.shap_values(X_test)
+            plt.figure(figsize=(12, 8))
+            shap.summary_plot(shap_values, X_test, feature_names=X_test.columns, show=False)
+            shap_plot_path = os.path.join(plots_dir, 'shap_summary.png')
+            plt.savefig(shap_plot_path, bbox_inches='tight')
+            plt.close()
+            print(f"SHAP summary plot saved to {shap_plot_path}")
+        except Exception as e:
+            print(f"SHAP analysis failed: {e}")
+    else:
+        print("Skipping SHAP analysis (shap not installed)")
+
+    return report, macro_f1
