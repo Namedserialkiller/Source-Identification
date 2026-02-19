@@ -13,7 +13,6 @@ venv/
 models/
 *.h5
 *.pt
-*.pkl
 *.joblib
 
 # Data folders

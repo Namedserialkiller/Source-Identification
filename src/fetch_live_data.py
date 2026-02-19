@@ -16,6 +16,21 @@ HISTORICAL_MEANS = {"co": 3000.0, "no": 20.0, "no2": 90.0, "o3": 50.0, "so2": 80
 
 DELHI_SENSORS = [13866, 24, 13864, 27, 28, 29, 26, 30, 33, 32, 31, 34, 392, 12234783, 12234789]
 
+
+def get_active_sensors(client, sensors_list, hours_back=1):
+    """Get list of sensors that have data in the last hours_back hours."""
+    active_sensors = []
+    start_date = datetime.utcnow() - timedelta(hours=hours_back)
+    for s_id in sensors_list:
+        try:
+            response = client.measurements.list(sensors_id=[s_id], date_from=start_date.isoformat(), limit=1)
+            results = getattr(response, "results", [])
+            if results:
+                active_sensors.append(s_id)
+        except Exception:
+            pass
+    return active_sensors
+
 def fetch_delhi_aqi(hours_back: int = 24, use_historical_fallback: bool = True) -> pd.DataFrame:
     load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
     api_key = os.getenv("OPENAQ_API_KEY")
