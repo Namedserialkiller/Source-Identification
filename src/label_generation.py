@@ -48,6 +48,8 @@ def generate_labels(
       (ammonia is a signature of biomass burning).
     - Traffic: no2 > 75th percentile AND fire_count == 0 AND high pm_ratio.
     - Industry: so2 > 80th percentile OR (low pm_ratio AND high pm10).
+    - Road Dust: high pm10 AND low pm_ratio AND fire_count == 0 AND not high so2 AND not high no2.
+    - Construction: high pm10 AND low pm_ratio AND fire_count == 0 AND high no2 AND not high so2.
     - Mixed/Other: Default when no rule applies.
 
     Args:
@@ -61,7 +63,7 @@ def generate_labels(
         pm10_col: Name of PM10 column.
 
     Returns:
-        Series of string labels: 'stubble', 'traffic', 'industry', 'mixed'.
+        Series of string labels: 'stubble', 'traffic', 'industry', 'road_dust', 'construction', 'mixed'.
     """
     rng = np.random.default_rng(random_state)
     df = ensure_date_column(df, date_col=date_col)
@@ -99,9 +101,8 @@ def generate_labels(
 
     labels = np.full(len(df), "mixed", dtype=object)
 
-    # Industry: SO2 > 80th percentile (industrial combustion) OR
-    #           low pm_ratio AND high pm10 (coarse-dominated, e.g. dust/industry)
-    industry_mask = high_so2 | (low_pm_ratio & high_pm10)
+    # Industry: SO2 > 80th percentile (industrial combustion)
+    industry_mask = high_so2
     labels[industry_mask] = "industry"
 
     # Traffic: NO2 > 75th percentile (vehicular exhaust) AND no fires AND high pm_ratio
@@ -117,10 +118,18 @@ def generate_labels(
     )
     labels[stubble_mask] = "stubble"
 
+    # Road Dust: low pm_ratio AND high pm10 AND not high so2 AND not construction season
+    road_dust_mask = low_pm_ratio & high_pm10 & ~high_so2 & ~month.isin([3,4,5,6])
+    labels[road_dust_mask] = "road_dust"
+
+    # Construction: low pm_ratio AND high pm10 AND not high so2 AND construction season
+    construction_mask = low_pm_ratio & high_pm10 & ~high_so2 & month.isin([3,4,5,6])
+    labels[construction_mask] = "construction"
+
     # Introduce label noise: randomly flip 10% to a different class
     # Prevents model from finding perfect mathematical thresholds
     labels = pd.Series(labels, index=df.index)
-    classes = np.array(["stubble", "traffic", "industry", "mixed"])
+    classes = np.array(["stubble", "traffic", "industry", "road_dust", "construction", "mixed"])
     n_flip = int(len(labels) * label_noise_fraction)
     if n_flip > 0:
         flip_idx = rng.choice(len(labels), size=n_flip, replace=False)

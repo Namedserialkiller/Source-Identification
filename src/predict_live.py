@@ -43,7 +43,7 @@ def predict_live_delhi(
         if hours_back <= 1:
             df = fetch_latest_single_reading()
         else:
-            df = fetch_delhi_aqi(hours_back=hours_back, use_historical_fallback=True)
+            df = fetch_delhi_aqi(hours_back=hours_back, use_historical_fallback=False)
             df = df.tail(1).reset_index(drop=True)
 
         if df.empty:

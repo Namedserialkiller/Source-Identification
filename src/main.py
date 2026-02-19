@@ -71,7 +71,7 @@ def run_pipeline(
             )
         print("\n=== Fetching Live Data from OpenAQ API ===")
         try:
-            df = fetch_delhi_aqi(hours_back=24, use_historical_fallback=True)
+            df = fetch_delhi_aqi(hours_back=168, use_historical_fallback=False)
             print(f"Fetched {len(df)} records from OpenAQ\n")
         except Exception as e:
             print(f"Error fetching live data: {e}")
