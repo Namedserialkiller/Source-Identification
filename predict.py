@@ -1,8 +1,19 @@
 """
 Prediction pipeline: preprocess raw data, load artifacts, return predictions.
+
+Run from project root with: python -c "import sys; sys.path.insert(0,'src'); from predict import predict"
+Or from src/: python -c "from predict import predict"
 """
 
 import os
+import sys
+
+# Allow running from project root when src contains the modules
+_script_dir = os.path.dirname(os.path.abspath(__file__))
+_src_dir = os.path.join(_script_dir, "src")
+if os.path.isdir(_src_dir) and _src_dir not in sys.path:
+    sys.path.insert(0, _src_dir)
+
 import joblib
 import pandas as pd
 import numpy as np
@@ -34,13 +45,11 @@ def predict(raw_df: pd.DataFrame, fill_missing: bool = True) -> np.ndarray:
 
     Raw data must contain: date, PM (pm2_5/PM25, pm10/PM10), gaseous pollutants
     (co, no, no2, o3, so2, nh3). Optional: wind_dir, wind_speed, fire_count.
-    Applies the same preprocessing as training (cyclical month, wind u/v,
-    pm_ratio, nitrogen_ratio, gaseous normalization).
+    Applies the same preprocessing as training.
 
     Args:
         raw_df: DataFrame with required and optional columns.
         fill_missing: If True, fill NaN in features with 0 before prediction.
-                      If False, rows with NaN are dropped from the output alignment.
 
     Returns:
         Array of predicted labels (string: stubble, traffic, industry, mixed).
@@ -69,16 +78,7 @@ def predict(raw_df: pd.DataFrame, fill_missing: bool = True) -> np.ndarray:
 
 
 def predict_proba(raw_df: pd.DataFrame, fill_missing: bool = True) -> np.ndarray:
-    """
-    Return predicted class probabilities for each row of raw data.
-
-    Args:
-        raw_df: Same as in predict().
-        fill_missing: Same as in predict().
-
-    Returns:
-        Array of shape (n_samples, n_classes) with probabilities.
-    """
+    """Return predicted class probabilities for each row of raw data."""
     model, encoder, scaler = load_artifacts()
     df, _ = preprocess(raw_df, scaler=scaler)
     feature_cols = get_feature_columns()

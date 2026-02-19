@@ -1,130 +1,171 @@
-"""
-Real-time prediction using live OpenAQ data.
-
-Fetches latest Delhi AQI measurements and predicts pollution source.
-"""
-
-import sys
+import os
+import requests
 import pandas as pd
-import numpy as np
+from datetime import datetime
+import time
+from dotenv import load_dotenv
 
-try:
-    from fetch_live_data import fetch_latest_single_reading, fetch_delhi_aqi
-    from predict import predict, predict_proba
-    LIVE_PREDICT_AVAILABLE = True
-except ImportError as e:
-    LIVE_PREDICT_AVAILABLE = False
-    print(f"Error importing required modules: {e}")
-    print("Ensure openaq is installed: pip install openaq python-dotenv")
+load_dotenv()
+
+from predict import predict, predict_proba, load_artifacts
 
 
-def predict_live_delhi(
-    hours_back: int = 1,
-    show_probabilities: bool = True,
-) -> dict:
-    """
-    Fetch latest Delhi AQI data and predict pollution source.
+WAQI_API_KEY = os.getenv("WAQI_API_KEY")
 
-    Args:
-        hours_back: Hours to look back for measurements (default 1 for most recent).
-        show_probabilities: If True, include class probabilities in output.
+BASE_URL = "https://api.waqi.info/feed/delhi/"
 
-    Returns:
-        Dictionary with predictions, probabilities (if requested), and metadata.
-    """
-    if not LIVE_PREDICT_AVAILABLE:
-        raise ImportError(
-            "Live prediction requires openaq package. "
-            "Install with: pip install openaq python-dotenv"
-        )
 
-    print("Fetching latest Delhi AQI data from OpenAQ...")
+# -------------------------------
+# Fetch Live Data
+# -------------------------------
+def fetch_delhi_data():
+
+    if not WAQI_API_KEY:
+        raise Exception("WAQI_API_KEY environment variable not set")
+
+    params = {
+        "token": WAQI_API_KEY
+    }
+
+    max_retries = 3
+    retry_delay = 2
+
+    for attempt in range(max_retries):
+
+        try:
+            res = requests.get(
+                BASE_URL,
+                params=params,
+                timeout=15
+            )
+
+            res.raise_for_status()
+            data = res.json()
+
+            if data.get("status") != "ok":
+                raise Exception(f"WAQI API Error: {data.get('data')}")
+
+            data_node = data["data"]
+            iaqi = data_node.get("iaqi", {})
+
+            station_name = data_node.get("city", {}).get("name", "Unknown")
+            last_updated = data_node.get("time", {}).get("s", "Unknown")
+
+            values = {
+                "station": station_name,
+                "time": last_updated
+            }
+
+            param_mapping = {
+                "pm25": "pm25",
+                "pm10": "pm10",
+                "co": "co",
+                "no2": "no2",
+                "o3": "o3",
+                "so2": "so2",
+                "nh3": "nh3",
+                "no": "no"
+            }
+
+            for waqi_param, model_param in param_mapping.items():
+                values[model_param] = iaqi.get(waqi_param, {}).get("v", 0)
+
+            # Safety rule
+            if values["pm10"] < values["pm25"]:
+                values["pm10"] = values["pm25"]
+
+            values["wind_speed"] = iaqi.get("w", {}).get("v", 0)
+            values["wind_dir"] = iaqi.get("wd", {}).get("v", 0)
+
+            return values
+
+
+        except Exception as e:
+
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+                retry_delay *= 2
+
+            else:
+                raise Exception(f"WAQI API Failed: {str(e)}")
+
+
+# -------------------------------
+# Main Prediction Function (API ENTRY)
+# -------------------------------
+def get_live_prediction():
+
     try:
-        if hours_back <= 1:
-            df = fetch_latest_single_reading()
-        else:
-            df = fetch_delhi_aqi(hours_back=hours_back, use_historical_fallback=True)
-            df = df.tail(1).reset_index(drop=True)
-
-        if df.empty:
-            raise ValueError("No data fetched from OpenAQ API")
-
-        print(f"\nLatest reading timestamp: {df['date'].iloc[0]}")
-        print(f"Parameters: {[c for c in df.columns if c != 'date']}")
-
-        # Predict
-        labels = predict(df, fill_missing=True)
-        result = {
-            "timestamp": str(df["date"].iloc[0]),
-            "predicted_source": labels[0] if len(labels) > 0 else "unknown",
-            "measurements": df.iloc[0].to_dict(),
+        values = fetch_delhi_data()
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": str(e)
         }
 
-        if show_probabilities:
-            probs = predict_proba(df, fill_missing=True)
-            if len(probs) > 0:
-                # Get class names from encoder
-                from predict import load_artifacts
-                _, encoder, _ = load_artifacts()
-                class_names = encoder.classes_
-                result["probabilities"] = {
-                    cls: float(prob) for cls, prob in zip(class_names, probs[0])
-                }
+    # Prepare DataFrame
+    df = pd.DataFrame([{
 
-        return result
+        "date": datetime.utcnow(),
 
-    except Exception as e:
-        print(f"Error in live prediction: {e}")
-        raise
+        "pm2_5": values.get("pm25", 0),
+        "pm10": values.get("pm10", 0),
+        "co": values.get("co", 0),
+        "no2": values.get("no2", 0),
+        "o3": values.get("o3", 0),
+        "so2": values.get("so2", 0),
+        "nh3": values.get("nh3", 0),
+        "no": values.get("no", 0),
 
+        "wind_speed": values.get("wind_speed", 0),
+        "wind_dir": values.get("wind_dir", 0),
 
-def main():
-    """CLI entry point for live predictions."""
-    import argparse
+        "fire_count": 0
+    }])
 
-    parser = argparse.ArgumentParser(
-        description="Predict pollution source from live Delhi AQI data."
-    )
-    parser.add_argument(
-        "--hours-back",
-        type=int,
-        default=1,
-        help="Hours to look back for measurements (default: 1)",
-    )
-    parser.add_argument(
-        "--no-probabilities",
-        action="store_true",
-        help="Don't show class probabilities",
-    )
-    args = parser.parse_args()
+    # Predict
+    label = predict(df)[0]
+    probs = predict_proba(df)[0]
 
-    try:
-        result = predict_live_delhi(
-            hours_back=args.hours_back,
-            show_probabilities=not args.no_probabilities,
-        )
+    _, encoder, _ = load_artifacts()
 
-        print("\n" + "=" * 50)
-        print("PREDICTION RESULT")
-        print("=" * 50)
-        print(f"Timestamp: {result['timestamp']}")
-        print(f"Predicted Source: {result['predicted_source'].upper()}")
-        if "probabilities" in result:
-            print("\nClass Probabilities:")
-            for cls, prob in sorted(
-                result["probabilities"].items(), key=lambda x: x[1], reverse=True
-            ):
-                print(f"  {cls:12s}: {prob:.2%}")
-        print("\nMeasurements:")
-        for key, val in result["measurements"].items():
-            if key != "date":
-                print(f"  {key:12s}: {val}")
-        print("=" * 50)
+    confidence = f"{probs.max():.2%}"
 
-    except Exception as e:
-        print(f"\nError: {e}", file=sys.stderr)
-        sys.exit(1)
+    probabilities = {
+        source: f"{prob:.2%}"
+        for source, prob in zip(encoder.classes_, probs)
+    }
 
+    # Final Output
+    result = {
+
+        "status": "success",
+
+        "station": values.get("station"),
+        "last_updated": values.get("time"),
+        "generated_at": datetime.utcnow().isoformat(),
+
+        "inputs": {
+            "pm25": values.get("pm25", 0),
+            "pm10": values.get("pm10", 0),
+            "no2": values.get("no2", 0),
+            "so2": values.get("so2", 0),
+            "nh3": values.get("nh3", 0),
+            "co": values.get("co", 0),
+            "o3": values.get("o3", 0),
+            "no": values.get("no", 0)
+        },
+
+        "prediction": {
+            "label": str(label),
+            "confidence": confidence,
+            "probabilities": probabilities
+        }
+    }
+
+    return result
 
 if __name__ == "__main__":
-    main()
+    import json
+    result = get_live_prediction()
+    print(json.dumps(result, indent=4))
